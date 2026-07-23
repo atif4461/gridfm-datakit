@@ -50,6 +50,7 @@ from gridfm_datakit.utils.idx_bus import (
 )
 from gridfm_datakit.utils.idx_cost import MODEL, NCOST, POLYNOMIAL
 from gridfm_datakit.utils.idx_gen import GEN_BUS, GEN_STATUS, PG, QG
+from gridfm_datakit.utils.profiler import profile
 
 
 def correct_network(network_path: str, force: bool = False) -> str:
@@ -613,6 +614,7 @@ class Network:
         # print(f"MATPOWER case file saved as {filename}")
 
 
+@profile()
 def load_net_from_file(network_path: str) -> Network:
     """Load a network from a MATPOWER file.
 
@@ -662,6 +664,7 @@ def get_pglib_file_path(grid_name: str) -> str:
     return correct_network(file_path)
 
 
+@profile()
 def load_net_from_pglib(grid_name: str) -> Network:
     """Load a power grid network from PGLib using matpowercaseframes.
 
@@ -693,6 +696,7 @@ def load_net_from_pglib(grid_name: str) -> Network:
     return Network(mpc)
 
 
+@profile()
 def makeYbus(
     baseMVA: float,
     bus: np.ndarray,

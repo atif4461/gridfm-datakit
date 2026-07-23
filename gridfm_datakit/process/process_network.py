@@ -62,6 +62,7 @@ from gridfm_datakit.utils.idx_bus import (
 from gridfm_datakit.utils.idx_cost import COST, NCOST
 from gridfm_datakit.utils.idx_gen import GEN_BUS, PMAX, PMIN, QMAX, QMIN
 from gridfm_datakit.utils.random_seed import custom_seed
+from gridfm_datakit.utils.profiler import profile
 from gridfm_datakit.process.solver_output import (
     SolverOutputConfig,
     build_router,
@@ -69,6 +70,7 @@ from gridfm_datakit.process.solver_output import (
 )
 
 
+@profile()
 def init_julia(
     max_iter: int,
     solver_log_dir: str = None,
@@ -359,6 +361,7 @@ def init_julia(
     return jl
 
 
+@profile()
 def pf_preprocessing(net: Network, res: Dict[str, Any]) -> Network:
     """Set variables to the results of OPF.
 
@@ -444,6 +447,7 @@ def apply_slack_single_gen(
     return pg_gen_dc
 
 
+@profile()
 def pf_post_processing(
     scenario_index: int,
     net: Network,
@@ -776,6 +780,7 @@ def pf_post_processing(
     }
 
 
+@profile()
 def process_scenario_pf_mode(
     net: Network,
     scenarios: np.ndarray,
@@ -986,6 +991,7 @@ def process_scenario_pf_mode(
     return local_processed_data
 
 
+@profile()
 def process_scenario_chunk(
     mode: str,
     start_idx: int,
@@ -1120,6 +1126,7 @@ def process_scenario_chunk(
         return e, traceback.format_exc(), None
 
 
+@profile()
 def process_scenario_opf_mode(
     net: Network,
     scenarios: np.ndarray,

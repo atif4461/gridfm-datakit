@@ -23,8 +23,10 @@ from gridfm_datakit.utils.column_names import (
 )
 from gridfm_datakit.network import Network
 from gridfm_datakit.utils.utils import n_scenario_per_partition
+from gridfm_datakit.utils.profiler import profile
 
 
+@profile()
 def _process_and_save(args: Tuple[str, List[np.ndarray], str, int, int, bool]) -> None:
     """Worker function for processing and saving one dataset type (bus/gen/branch/y_bus).
 
@@ -125,6 +127,7 @@ def _process_and_save(args: Tuple[str, List[np.ndarray], str, int, int, bool]) -
     )
 
 
+@profile()
 def save_node_edge_data(
     net: Network,
     node_path: str,

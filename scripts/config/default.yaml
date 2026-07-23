@@ -51,3 +51,4 @@ settings:
   dcpf_fast: true # Whether to use fast DCPF solver by default (compute_dc_pf from PowerModels.jl)
   max_iter: 200 # Max iterations for Ipopt-based solvers
   seed: null # Seed for random number generation. If null, a random seed is generated (RECOMMENDED). To get the same data across runs, set the seed and note that ALL OTHER PARAMETERS IN THE CONFIG FILE MUST BE THE SAME.
+  profiler: false # If true, time each instrumented function/routine/IO and Julia solver call (per process, aggregated across workers) and write profile_report.txt under {data_dir}/{network}/raw/profile/

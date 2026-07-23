@@ -41,6 +41,7 @@ from gridfm_datakit.utils.param_handler import (
     initialize_topology_generator,
 )
 from gridfm_datakit.utils.random_seed import custom_seed
+from gridfm_datakit.utils import profiler
 from gridfm_datakit.utils.utils import Tee, write_ram_usage_distributed
 
 
@@ -128,6 +129,14 @@ def _setup_environment(
     )
     os.makedirs(solver_log_dir, exist_ok=True) if solver_log_dir is not None else None
 
+    # Enable profiling if requested. This must happen before any worker Pool is
+    # created so the configuration is inherited by spawned workers (see
+    # gridfm_datakit.utils.profiler). Defaults to off when the key is absent.
+    if getattr(args.settings, "profiler", False):
+        profile_dir = os.path.join(base_path, "profile")
+        profiler.enable_profiler(profile_dir, is_main=True)
+        print(f"Profiler enabled. Report will be written to {profile_dir}")
+
     # Setup file paths
     file_paths = {
         "tqdm_log": os.path.join(base_path, "tqdm.log"),
@@ -169,6 +178,7 @@ def _setup_environment(
     return args, base_path, file_paths, seed
 
 
+@profiler.profile()
 def _prepare_network_and_scenarios(
     args: NestedNamespace,
     file_paths: Dict[str, str],
@@ -237,6 +247,7 @@ def _prepare_network_and_scenarios(
     return net, scenarios, meta
 
 
+@profiler.profile()
 def _save_generated_data(
     net: Network,
     processed_data: List,
@@ -388,6 +399,12 @@ def generate_power_flow_data(
         base_path,
         args,
     )
+
+    # Merge per-process profiling stats and write the report.
+    if profiler.is_enabled():
+        report_path = profiler.write_report()
+        if report_path is not None:
+            print(f"Profiling report written to {report_path}")
 
     return file_paths
 
@@ -542,5 +559,11 @@ def generate_power_flow_data_distributed(
 
                 del processed_data
                 gc.collect()
+
+    # Merge per-process profiling stats (main + all workers) and write report.
+    if profiler.is_enabled():
+        report_path = profiler.write_report()
+        if report_path is not None:
+            print(f"Profiling report written to {report_path}")
 
     return file_paths
