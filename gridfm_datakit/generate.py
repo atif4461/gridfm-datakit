@@ -5,6 +5,7 @@ import multiprocessing
 import os
 import shutil
 import sys
+import time
 from datetime import datetime
 from multiprocessing import Manager
 from typing import Any, Dict, List, Tuple, Union
@@ -45,6 +46,7 @@ from gridfm_datakit.utils import profiler
 from gridfm_datakit.utils.utils import Tee, write_ram_usage_distributed
 
 
+@profiler.profile()
 def _setup_environment(
     config: Union[str, Dict[str, Any], NestedNamespace],
 ) -> Tuple[NestedNamespace, str, Dict[str, str], int]:
@@ -277,6 +279,7 @@ def _save_generated_data(
         )
 
 
+@profiler.profile()
 def generate_power_flow_data(
     config: Union[str, Dict[str, Any], NestedNamespace],
 ) -> Dict[str, str]:
@@ -440,8 +443,12 @@ def generate_power_flow_data_distributed(
         - scenarios_{generator}.html: Load scenario plots
         - scenarios_{generator}.log: Load scenario generation notes
     """
+    t0 = time.time()
     # Setup environment
     args, base_path, file_paths, seed = _setup_environment(config)
+
+    print('\n Time for _setup_environment',time.time()-t0,flush=True)
+    t0 = time.time()
 
     # check if mode is valid
     if args.settings.mode not in ["opf", "pf"]:
@@ -450,8 +457,14 @@ def generate_power_flow_data_distributed(
     # Prepare network and scenarios
     net, scenarios, meta = _prepare_network_and_scenarios(args, file_paths, seed)
 
+    print('\n Time for _prepare_network_and_scenarios',time.time()-t0,flush=True)
+    t0 = time.time()
+
     # Initialize topology generator
     topology_generator = initialize_topology_generator(args.topology_perturbation, net)
+
+    print('\n Time for initialize_topology_generator',time.time()-t0,flush=True)
+    t0 = time.time()
 
     # Initialize generation generator
     generation_generator = initialize_generation_generator(
@@ -459,11 +472,17 @@ def generate_power_flow_data_distributed(
         net,
     )
 
+    print('\n Time for initialize_generation_generator',time.time()-t0,flush=True)
+    t0 = time.time()
+
     # Initialize admittance generator
     admittance_generator = initialize_admittance_generator(
         args.admittance_perturbation,
         net,
     )
+
+    print('\n Time for initialize_admittance_generator',time.time()-t0,flush=True)
+    t0 = time.time()
 
     # Setup multiprocessing
     manager = Manager()
@@ -564,6 +583,8 @@ def generate_power_flow_data_distributed(
                 del processed_data
                 gc.collect()
 
+    print('\n Time for data generation',time.time()-t0,flush=True)
+    
     # Merge per-process profiling stats (main + all workers) and write report.
     if profiler.is_enabled():
         report_path = profiler.write_report()

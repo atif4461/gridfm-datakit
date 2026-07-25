@@ -188,6 +188,8 @@ def init_julia(
                     "tol" => 1e-6,
                     "print_level" => {},
                     "max_iter" => {},
+                    "linear_solver" => "ma57",
+                    "hsllib" => "/home/atif/packages/coinhsl-2023.11.17/install/lib/x86_64-linux-gnu/libcoinhsl.so"
                 ),
             )
             end_time = time()  # record end time
@@ -276,6 +278,8 @@ def init_julia(
                     "tol" => 1e-6,
                     "print_level" => {},
                     "max_iter" => {},
+                    "linear_solver" => "ma57",
+                    "hsllib" => "/home/atif/packages/coinhsl-2023.11.17/install/lib/x86_64-linux-gnu/libcoinhsl.so"
                 ),
             )
 

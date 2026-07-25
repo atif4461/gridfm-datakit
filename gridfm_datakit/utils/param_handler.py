@@ -24,6 +24,7 @@ from gridfm_datakit.perturbations.admittance_perturbation import (
     NoAdmittancePerturbationGenerator,
     AdmittanceGenerator,
 )
+from gridfm_datakit.utils import profiler
 
 
 class NestedNamespace(argparse.Namespace):
@@ -198,6 +199,7 @@ def get_load_scenario_generator(args: NestedNamespace) -> LoadScenarioGeneratorB
         return Powergraph(args.agg_profile)
 
 
+@profiler.profile()
 def initialize_topology_generator(
     args: NestedNamespace,
     base_net: Network,
@@ -267,6 +269,7 @@ def initialize_topology_generator(
     return generator
 
 
+@profiler.profile()
 def initialize_generation_generator(
     args: NestedNamespace,
     base_net: Network,
@@ -317,6 +320,7 @@ def initialize_generation_generator(
     return generator
 
 
+@profiler.profile()
 def initialize_admittance_generator(
     args: NestedNamespace,
     base_net: Network,
