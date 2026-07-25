@@ -346,15 +346,17 @@ def generate_power_flow_data(
 
     # Process scenarios sequentially with deterministic seed
     # Use custom_seed to control randomness for reproducibility
+    # Limit to first 64 scenarios for actual processing
+    n_scenarios_to_process = min(args.load.scenarios, 64)
     with custom_seed(seed + 1):
         with open(file_paths["tqdm_log"], "a") as f:
             with tqdm(
-                total=args.load.scenarios,
+                total=n_scenarios_to_process,
                 desc="Processing scenarios",
                 file=Tee(sys.stdout, f),
                 miniters=5,
             ) as pbar:
-                for scenario_index in range(args.load.scenarios):
+                for scenario_index in range(n_scenarios_to_process):
                     # Process the scenario
                     if args.settings.mode == "opf":
                         processed_data = process_scenario_opf_mode(
@@ -467,15 +469,17 @@ def generate_power_flow_data_distributed(
     manager = Manager()
     progress_queue = manager.Queue()
 
-    # Process scenarios in chunks
+    # Process scenarios in chunks - limit to first 64 scenarios for actual processing
+    # while keeping full scenarios array for interpolation purposes
+    n_scenarios_to_process = min(args.load.scenarios, 64)
     large_chunks = np.array_split(
-        range(args.load.scenarios),
-        np.ceil(args.load.scenarios / args.settings.large_chunk_size).astype(int),
+        range(n_scenarios_to_process),
+        np.ceil(n_scenarios_to_process / args.settings.large_chunk_size).astype(int),
     )
 
     with open(file_paths["tqdm_log"], "a") as f:
         with tqdm(
-            total=args.load.scenarios,
+            total=n_scenarios_to_process,
             desc="Processing scenarios",
             file=Tee(sys.stdout, f),
             miniters=5,
