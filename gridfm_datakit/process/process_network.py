@@ -176,6 +176,16 @@ def init_julia(
             else:
                 raise
 
+
+        coinhsl_options = ""
+        coinhsl_enabled = True #need to link to config
+        
+        if coinhsl_enabled:
+            coinhsl_options = """
+                            "linear_solver" => "ma57",
+                            "hsllib" => "/home/atif/packages/coinhsl-2023.11.17/install/lib/x86_64-linux-gnu/libcoinhsl.so",
+        """
+
         # ----- AC-OPF core -----
         jl.seval(
             """
@@ -188,8 +198,7 @@ def init_julia(
                     "tol" => 1e-6,
                     "print_level" => {},
                     "max_iter" => {},
-                    "linear_solver" => "ma57",
-                    "hsllib" => "/home/atif/packages/coinhsl-2023.11.17/install/lib/x86_64-linux-gnu/libcoinhsl.so"
+        {}
                 ),
             )
             end_time = time()  # record end time
@@ -197,7 +206,7 @@ def init_julia(
             result["solution"]["pf"] = false
             return result
         end
-        """.format(print_level, max_iter),
+        """.format(print_level, max_iter, coinhsl_options),
         )
 
         # Output routing is handled in Python (fd-level capture around the call),
@@ -278,8 +287,7 @@ def init_julia(
                     "tol" => 1e-6,
                     "print_level" => {},
                     "max_iter" => {},
-                    "linear_solver" => "ma57",
-                    "hsllib" => "/home/atif/packages/coinhsl-2023.11.17/install/lib/x86_64-linux-gnu/libcoinhsl.so"
+        {}
                 ),
             )
 
@@ -294,7 +302,7 @@ def init_julia(
             result["solution"]["pf"] = true
             return result
         end
-        """.format(print_level, max_iter),
+        """.format(print_level, max_iter, coinhsl_options),
         )
 
         jl.seval("const run_pf = _run_pf_core")
