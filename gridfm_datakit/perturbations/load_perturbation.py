@@ -78,6 +78,37 @@ def _find_largest_scaling_factor_worker(
     return u
 
 
+
+def reconstruct_scenarios_from_df(df: pd.DataFrame, n_loads: int, n_scenarios: int) -> np.ndarray:
+    """
+    Inverts load_scenarios_to_df to reconstruct the 3D numpy array.
+
+    Args:
+        df: The DataFrame loaded from the parquet file.
+        n_loads: The number of loads (must be known or inferred).
+        n_scenarios: The number of scenarios (must be known or inferred).
+
+    Returns:
+        scenarios: 3D numpy array of shape (n_loads, n_scenarios, 2)
+    """
+    # 1. Sort the dataframe to ensure the order matches the 'F' (Fortran) order
+    # used in the original flattening.
+    # The original used: load_idx (tile) and scenarios_idx (repeat).
+    # To reverse 'F' order, we sort by scenarios_idx first, then load_idx.
+    df_sorted = df.sort_values(by=["load_scenario", "load"]).reset_index(drop=True)
+
+    # 2. Extract the p_mw and q_mvar values
+    # The values are currently in a flat structure in the sorted DF
+    values = df_sorted[["p_mw", "q_mvar"]].values
+
+    # 3. Reshape
+    # The original reshaped via: scenarios.reshape((-1, 2), order="F")
+    # To reverse this, we reshape to the target dimensions using order="F"
+    scenarios = values.reshape((n_loads, n_scenarios, 2), order="F")
+
+    return scenarios
+
+
 def load_scenarios_to_df(scenarios: np.ndarray) -> pd.DataFrame:
     """Converts load scenarios array to a DataFrame.
 

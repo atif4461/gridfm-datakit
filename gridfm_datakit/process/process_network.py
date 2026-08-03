@@ -178,7 +178,7 @@ def init_julia(
 
 
         coinhsl_options = ""
-        coinhsl_enabled = True #need to link to config
+        coinhsl_enabled = False #need to link to config
         
         if coinhsl_enabled:
             coinhsl_options = """
@@ -241,7 +241,7 @@ def init_julia(
         jl.seval("""
         function run_pf_fast(case_file)
             network = PowerModels.parse_file(case_file)
-            result = compute_ac_pf(network)
+            result = compute_ac_pf(network; show_trace = true)
 
             if result["termination_status"] == false
                 return result
@@ -274,6 +274,17 @@ def init_julia(
             return result
         end
         """)
+
+        coinhsl_options = ""
+        coinhsl_enabled = False #need to link to config
+        
+        if coinhsl_enabled:
+            coinhsl_options = """
+                            "linear_solver" => "ma57",
+                            "hsllib" => "/home/atif/packages/coinhsl-2023.11.17/install/lib/x86_64-linux-gnu/libcoinhsl.so",
+        """
+                            #"nlp_scaling_method" => "gradient-based",
+
 
         # ----- AC-PF core -----
         jl.seval(
@@ -459,7 +470,6 @@ def apply_slack_single_gen(
     return pg_gen_dc
 
 
-@profile()
 def pf_post_processing(
     scenario_index: int,
     net: Network,
@@ -915,6 +925,7 @@ def process_scenario_pf_mode(
     for pert_index, perturbation in enumerate(perturbations):
         if pf_solver == "powermodel":
             res_dcpf = None
+            print("pt 3", flush=True)
             if include_dc_res:
                 try:
                     res_dcpf = run_dcpf(perturbation, jl, fast=dcpf_fast)
@@ -924,6 +935,7 @@ def process_scenario_pf_mode(
                         f.write(
                             f"Caught an exception at scenario {scenario_index} when solving dcpf function: {e}\n",
                         )
+            print("pt 4", flush=True)
             try:
                 res = run_pf(perturbation, jl, fast=pf_fast)
             except Exception as e:
@@ -932,6 +944,7 @@ def process_scenario_pf_mode(
                         f"Caught an exception at scenario {scenario_index} when solving in run_pf function: {e}\n",
                     )
                 continue
+            print("pt 5", flush=True)
 
         if pf_solver == "powsybl":
             variant_id = f"scenario_{scenario_index}_perturbation_{pert_index}"

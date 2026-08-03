@@ -10,6 +10,7 @@ from datetime import datetime
 from multiprocessing import Manager
 from typing import Any, Dict, List, Tuple, Union
 
+import pandas as pd
 import numpy as np
 import yaml
 from tqdm import tqdm
@@ -23,6 +24,7 @@ from gridfm_datakit.network import (
 )
 from gridfm_datakit.perturbations.load_perturbation import (
     load_scenarios_to_df,
+    reconstruct_scenarios_from_df,
     plot_load_scenarios_combined,
 )
 from gridfm_datakit.process.process_network import (
@@ -230,17 +232,36 @@ def _prepare_network_and_scenarios(
             f"network.source must be 'pglib' or 'file', got {args.network.source!r}",
         )
 
-    # Generate load scenarios
-    load_scenario_generator = get_load_scenario_generator(args.load)
-    scenarios = load_scenario_generator(
-        net,
-        args.load.scenarios,
-        file_paths["scenarios_log"],
-        max_iter=args.settings.max_iter,
-        seed=seed,
-    )
-    scenarios_df = load_scenarios_to_df(scenarios)
-    scenarios_df.to_parquet(file_paths["scenarios"], index=False, engine="pyarrow")
+    read_scenarios = False # connect to config
+    if read_scenarios:
+        # 1. Load the parquet
+        #scenarios_df = pd.read_parquet("/home/atif/gridfm-datakit/scripts/large_grids/data_case118_baseline/pf/case118_ieee/raw/scenarios_agg_load_profile.parquet")
+        scenarios_df = pd.read_parquet("/home/atif/gridfm-datakit/scripts/large_grids/data_ma57/pf/case24464_goc/raw/scenarios_agg_load_profile.parquet")
+        
+        # 2. Infer dimensions
+        # Total rows = n_loads * n_scenarios
+        # We can get n_scenarios from the max value of 'load_scenario' + 1
+        # We can get n_loads from the max value of 'load' + 1
+        n_scenarios = scenarios_df["load_scenario"].max() + 1
+        n_loads = scenarios_df["load"].max() + 1
+        
+        # 3. Reconstruct
+        scenarios = reconstruct_scenarios_from_df(scenarios_df, n_loads, n_scenarios)
+        
+        # Verify shape
+        print(f"Reconstructed shape: {scenarios.shape}") # Should be (n_loads, n_scenarios, 2)
+    else:
+        # Generate load scenarios
+        load_scenario_generator = get_load_scenario_generator(args.load)
+        scenarios = load_scenario_generator(
+            net,
+            args.load.scenarios,
+            file_paths["scenarios_log"],
+            max_iter=args.settings.max_iter,
+            seed=seed,
+        )
+        scenarios_df = load_scenarios_to_df(scenarios)
+        scenarios_df.to_parquet(file_paths["scenarios"], index=False, engine="pyarrow")
     if net.buses.shape[0] <= 100:
         plot_load_scenarios_combined(scenarios_df, file_paths["scenarios_plot"])
     else:
