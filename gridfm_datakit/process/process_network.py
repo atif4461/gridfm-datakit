@@ -77,6 +77,9 @@ def init_julia(
     dc_max_iter: Optional[int] = None,
     print_level: Optional[int] = None,
     output: Optional[SolverOutputConfig] = None,
+    coinhsl_enabled: bool = False,
+    coinhsl_linear_solver: str = "",
+    coinhsl_hsllib: str = "",
 ) -> Any:
     """Initialize Julia interface with PowerModels.jl.
 
@@ -93,6 +96,9 @@ def init_julia(
         dc_max_iter: Maximum number of iterations for DC OPF solver (default 1000).
         print_level: Legacy. Explicit Ipopt print level override.
         output: Solver-output config; takes precedence over the legacy args.
+        coinhsl_enabled: Whether to use CoinHSL linear solvers.
+        coinhsl_linear_solver: CoinHSL linear solver to use (e.g., "ma27", "ma57", "ma77", "ma86", "ma97").
+        coinhsl_hsllib: Path to CoinHSL shared library.
 
     Returns:
         Julia interface object for running power flow calculations.
@@ -176,15 +182,16 @@ def init_julia(
             else:
                 raise
 
-
-        coinhsl_options = ""
-        coinhsl_enabled = False #need to link to config
-        
+        # Build coinhsl options string for Ipopt
         if coinhsl_enabled:
-            coinhsl_options = """
-                            "linear_solver" => "ma57",
-                            "hsllib" => "/home/atif/packages/coinhsl-2023.11.17/install/lib/x86_64-linux-gnu/libcoinhsl.so",
-        """
+            if not os.path.exists(coinhsl_hsllib):
+                raise FileNotFoundError(f"CoinHSL library not found at: {coinhsl_hsllib}")
+            coinhsl_options = f'''
+                            "linear_solver" => "{coinhsl_linear_solver}",
+                            "hsllib" => "{coinhsl_hsllib}",
+            '''
+        else:
+            coinhsl_options = ""
 
         # ----- AC-OPF core -----
         jl.seval(
@@ -274,17 +281,6 @@ def init_julia(
             return result
         end
         """)
-
-        coinhsl_options = ""
-        coinhsl_enabled = False #need to link to config
-        
-        if coinhsl_enabled:
-            coinhsl_options = """
-                            "linear_solver" => "ma57",
-                            "hsllib" => "/home/atif/packages/coinhsl-2023.11.17/install/lib/x86_64-linux-gnu/libcoinhsl.so",
-        """
-                            #"nlp_scaling_method" => "gradient-based",
-
 
         # ----- AC-PF core -----
         jl.seval(
@@ -925,7 +921,6 @@ def process_scenario_pf_mode(
     for pert_index, perturbation in enumerate(perturbations):
         if pf_solver == "powermodel":
             res_dcpf = None
-            print("pt 3", flush=True)
             if include_dc_res:
                 try:
                     res_dcpf = run_dcpf(perturbation, jl, fast=dcpf_fast)
@@ -935,7 +930,6 @@ def process_scenario_pf_mode(
                         f.write(
                             f"Caught an exception at scenario {scenario_index} when solving dcpf function: {e}\n",
                         )
-            print("pt 4", flush=True)
             try:
                 res = run_pf(perturbation, jl, fast=pf_fast)
             except Exception as e:
@@ -944,7 +938,6 @@ def process_scenario_pf_mode(
                         f"Caught an exception at scenario {scenario_index} when solving in run_pf function: {e}\n",
                     )
                 continue
-            print("pt 5", flush=True)
 
         if pf_solver == "powsybl":
             variant_id = f"scenario_{scenario_index}_perturbation_{pert_index}"
@@ -1036,6 +1029,9 @@ def process_scenario_chunk(
     seed: int,
     pf_solver: str = "powermodel",
     meta: Optional[Dict] = None,
+    coinhsl_enabled: bool = True,
+    coinhsl_linear_solver: str = "",
+    coinhsl_hsllib: str = "",
 ) -> Tuple[
     Union[None, Exception],
     Union[None, str],
@@ -1067,6 +1063,9 @@ def process_scenario_chunk(
             OPF is always solved by PowerModels regardless of this value.
         meta: metadata dict; when pf_solver='powsybl', must contain 'network_path'
             and 'mapping_p2g'. 'pp_net' is loaded fresh per worker from 'network_path'.
+        coinhsl_enabled: Whether to use CoinHSL linear solvers.
+        coinhsl_linear_solver: CoinHSL linear solver to use (e.g., "ma27", "ma57", "ma77", "ma86", "ma97").
+        coinhsl_hsllib: Path to CoinHSL shared library.
 
     Returns:
         Tuple containing:
@@ -1076,7 +1075,13 @@ def process_scenario_chunk(
     """
 
     try:
-        jl = init_julia(max_iter, solver_log_dir)
+        jl = init_julia(
+            max_iter,
+            solver_log_dir,
+            coinhsl_enabled=coinhsl_enabled,
+            coinhsl_linear_solver=coinhsl_linear_solver,
+            coinhsl_hsllib=coinhsl_hsllib,
+        )
 
         # In distributed (spawn) workers pp_net is not passed; reload it here.
         if (

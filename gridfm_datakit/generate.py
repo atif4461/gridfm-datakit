@@ -236,7 +236,7 @@ def _prepare_network_and_scenarios(
     if read_scenarios:
         # 1. Load the parquet
         #scenarios_df = pd.read_parquet("/home/atif/gridfm-datakit/scripts/large_grids/data_case118_baseline/pf/case118_ieee/raw/scenarios_agg_load_profile.parquet")
-        scenarios_df = pd.read_parquet("/home/atif/gridfm-datakit/scripts/large_grids/data_ma57/pf/case24464_goc/raw/scenarios_agg_load_profile.parquet")
+        scenarios_df = pd.read_parquet("/home/atif/gridfm-datakit/scripts/large_grids/scenarios_df/case19402/scenarios_agg_load_profile.parquet")
         
         # 2. Infer dimensions
         # Total rows = n_loads * n_scenarios
@@ -364,14 +364,34 @@ def generate_power_flow_data(
         net,
     )
 
-    jl = init_julia(args.settings.max_iter, file_paths["solver_log_dir"])
+    # Extract coinhsl settings from config
+    coinhsl_config = getattr(args.settings, "coinhsl", None)
+    coinhsl_enabled = False
+    coinhsl_linear_solver = ""
+    coinhsl_hsllib = ""
+    
+    if coinhsl_config is not None:
+        coinhsl_enabled = getattr(coinhsl_config, "enabled", False)
+        if coinhsl_enabled:
+            coinhsl_linear_solver = getattr(coinhsl_config, "linear_solver", "ma57")
+            coinhsl_hsllib = getattr(coinhsl_config, "hsllib", "/home/atif/packages/coinhsl-2023.11.17/install/lib/x86_64-linux-gnu/libcoinhsl.so")
+            if not os.path.exists(coinhsl_hsllib):
+                raise FileNotFoundError(f"CoinHSL library not found at: {coinhsl_hsllib}")
+
+    jl = init_julia(
+        args.settings.max_iter,
+        file_paths["solver_log_dir"],
+        coinhsl_enabled=coinhsl_enabled,
+        coinhsl_linear_solver=coinhsl_linear_solver,
+        coinhsl_hsllib=coinhsl_hsllib,
+    )
 
     processed_data = []
 
     # Process scenarios sequentially with deterministic seed
     # Use custom_seed to control randomness for reproducibility
     # Limit to first 64 scenarios for actual processing
-    n_scenarios_to_process = min(args.load.scenarios, 64)
+    n_scenarios_to_process = args.load.scenarios #min(args.load.scenarios, 64)
     with custom_seed(seed + 1):
         with open(file_paths["tqdm_log"], "a") as f:
             with tqdm(
@@ -511,7 +531,7 @@ def generate_power_flow_data_distributed(
 
     # Process scenarios in chunks - limit to first 64 scenarios for actual processing
     # while keeping full scenarios array for interpolation purposes
-    n_scenarios_to_process = min(args.load.scenarios, 64)
+    n_scenarios_to_process = args.load.scenarios #min(args.load.scenarios, 64)
     large_chunks = np.array_split(
         range(n_scenarios_to_process),
         np.ceil(n_scenarios_to_process / args.settings.large_chunk_size).astype(int),
@@ -536,6 +556,21 @@ def generate_power_flow_data_distributed(
                 # workers reload it themselves from network_path.
                 worker_meta = {k: v for k, v in meta.items() if k != "pp_net"}
 
+                # Extract coinhsl settings from config
+                coinhsl_config = getattr(args.settings, "coinhsl", None)
+                coinhsl_enabled = False
+                coinhsl_linear_solver = ""
+                coinhsl_hsllib = ""
+                
+                if coinhsl_config is not None:
+                    coinhsl_enabled = getattr(coinhsl_config, "enabled", False)
+                    if coinhsl_enabled:
+                        coinhsl_linear_solver = getattr(coinhsl_config, "linear_solver", "ma57")
+                        coinhsl_hsllib = getattr(coinhsl_config, "hsllib", "/home/atif/packages/coinhsl-2023.11.17/install/lib/x86_64-linux-gnu/libcoinhsl.so")
+                        if not os.path.exists(coinhsl_hsllib):
+                            raise FileNotFoundError(f"CoinHSL library not found at: {coinhsl_hsllib}")
+                # If coinhsl_config is None or coinhsl.enabled is False, coinhsl_enabled remains False
+
                 tasks = [
                     (
                         args.settings.mode,
@@ -556,6 +591,9 @@ def generate_power_flow_data_distributed(
                         seed,
                         args.settings.pf_solver,
                         worker_meta,
+                        coinhsl_enabled,
+                        coinhsl_linear_solver,
+                        coinhsl_hsllib,
                     )
                     for chunk in scenario_chunks
                 ]
