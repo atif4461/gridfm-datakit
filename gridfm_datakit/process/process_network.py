@@ -893,7 +893,7 @@ def process_scenario_pf_mode(
 
     # first run OPF to get the gen set points
     try:
-        res = run_opf(net, jl)
+        res = run_opf(net, jl, scenario_index=scenario_index, pert_index=None)
     except Exception as e:
         with open(error_log_file, "a") as f:
             f.write(
@@ -923,7 +923,7 @@ def process_scenario_pf_mode(
             res_dcpf = None
             if include_dc_res:
                 try:
-                    res_dcpf = run_dcpf(perturbation, jl, fast=dcpf_fast)
+                    res_dcpf = run_dcpf(perturbation, jl, fast=dcpf_fast, scenario_index=scenario_index, pert_index=pert_index)
 
                 except Exception as e:
                     with open(error_log_file, "a") as f:
@@ -931,7 +931,7 @@ def process_scenario_pf_mode(
                             f"Caught an exception at scenario {scenario_index} when solving dcpf function: {e}\n",
                         )
             try:
-                res = run_pf(perturbation, jl, fast=pf_fast)
+                res = run_pf(perturbation, jl, fast=pf_fast, scenario_index=scenario_index, pert_index=pert_index)
             except Exception as e:
                 with open(error_log_file, "a") as f:
                     f.write(
@@ -1213,7 +1213,7 @@ def process_scenario_opf_mode(
         res_dcopf = None
         if include_dc_res:
             try:
-                res_dcopf = run_dcopf(perturbation, jl)
+                res_dcopf = run_dcopf(perturbation, jl, scenario_index=scenario_index, pert_index=pert_index)
             except Exception as e:
                 with open(error_log_file, "a") as f:
                     f.write(
@@ -1221,7 +1221,7 @@ def process_scenario_opf_mode(
                     )
         try:
             # run OPF to get the gen set points. Here the set points account for the topology perturbation.
-            res = run_opf(perturbation, jl)
+            res = run_opf(perturbation, jl, scenario_index=scenario_index, pert_index=pert_index)
         except Exception as e:
             with open(error_log_file, "a") as f:
                 f.write(

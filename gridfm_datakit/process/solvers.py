@@ -10,20 +10,35 @@ and original case files.
 import numpy as np
 import tempfile
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from gridfm_datakit.network import Network
-from gridfm_datakit.process.solver_output import solver_capture
+from gridfm_datakit.process.solver_output import solver_capture, get_active_router
 from gridfm_datakit.utils.profiler import profile, profile_block
 from typing import Union
 
 
+def _write_scenario_header(channel_name: str, scenario_index: Optional[int], pert_index: Optional[int], solver_name: str) -> None:
+    """Write START/END markers to the solver log channel for a scenario/variant."""
+    router = get_active_router()
+    if router is None:
+        return
+    if scenario_index is None and pert_index is None:
+        return
+    channel = router.channel(channel_name)
+    tag = f"scenario={scenario_index}" + (f", variant={pert_index}" if pert_index is not None else "")
+    channel.write_header(f"===== {solver_name} START [{tag}] =====")
+    channel.write_header(f"===== {solver_name} END   [{tag}] =====")
+
+
 @profile()
-def run_opf(net: Network, jl: Any) -> Dict[str, Any]:
+def run_opf(net: Network, jl: Any, scenario_index: Optional[int] = None, pert_index: Optional[int] = None) -> Dict[str, Any]:
     """Run Optimal Power Flow (OPF) calculation using Julia interface.
 
     Args:
         net: A Network object containing the power system model.
         jl: Julia interface object for running OPF.
+        scenario_index: Optional scenario index for log markers.
+        pert_index: Optional perturbation index for log markers.
 
     Returns:
         OPF result containing termination status and solution data.
@@ -39,6 +54,9 @@ def run_opf(net: Network, jl: Any) -> Dict[str, Any]:
         # Save network to temporary file
         with profile_block("io.net.to_mpc"):
             net.to_mpc(temp_filename)
+
+        # Write scenario marker to solver log
+        _write_scenario_header("opf", scenario_index, pert_index, "OPF")
 
         with solver_capture("opf"):
             with profile_block("julia.run_opf"):
@@ -59,7 +77,7 @@ def run_opf(net: Network, jl: Any) -> Dict[str, Any]:
 
 
 @profile()
-def run_pf(net: Network, jl: Any, fast: Union[bool, None] = None) -> Dict[str, Any]:
+def run_pf(net: Network, jl: Any, fast: Union[bool, None] = None, scenario_index: Optional[int] = None, pert_index: Optional[int] = None) -> Dict[str, Any]:
     """Run Power Flow (PF) calculation using Julia interface.
 
     This function runs the power flow calculation using the Julia interface
@@ -69,6 +87,8 @@ def run_pf(net: Network, jl: Any, fast: Union[bool, None] = None) -> Dict[str, A
         net: A network object containing the power system model.
         jl: Julia interface object for running power flow.
         fast: If True, use the direct (non-optimizer) computation. If None, defaults to False (uses optimizer-based solver).
+        scenario_index: Optional scenario index for log markers.
+        pert_index: Optional perturbation index for log markers.
 
     Returns:
         Power flow result containing termination status and solution data.
@@ -85,6 +105,9 @@ def run_pf(net: Network, jl: Any, fast: Union[bool, None] = None) -> Dict[str, A
         # Save network to temporary file
         with profile_block("io.net.to_mpc"):
             net.to_mpc(temp_filename)
+
+        # Write scenario marker to solver log
+        _write_scenario_header("pf", scenario_index, pert_index, "PF")
 
         # Run PF
         with solver_capture("pf"):
@@ -114,7 +137,7 @@ def run_pf(net: Network, jl: Any, fast: Union[bool, None] = None) -> Dict[str, A
 
 
 @profile()
-def run_dcpf(net: Network, jl: Any, fast: Union[bool, None] = None) -> Dict[str, Any]:
+def run_dcpf(net: Network, jl: Any, fast: Union[bool, None] = None, scenario_index: Optional[int] = None, pert_index: Optional[int] = None) -> Dict[str, Any]:
     """Run DC Power Flow (DCPF) calculation using Julia interface.
 
     This function runs the DC power flow calculation using the Julia interface
@@ -124,6 +147,8 @@ def run_dcpf(net: Network, jl: Any, fast: Union[bool, None] = None) -> Dict[str,
         net: A network object containing the power system model.
         jl: Julia interface object for running DC power flow.
         fast: If True, use the direct (non-optimizer) computation. If None, defaults to False (uses optimizer-based solver).
+        scenario_index: Optional scenario index for log markers.
+        pert_index: Optional perturbation index for log markers.
 
     Returns:
         DC power flow result containing termination status and solution data.
@@ -140,6 +165,9 @@ def run_dcpf(net: Network, jl: Any, fast: Union[bool, None] = None) -> Dict[str,
         # Save network to temporary file
         with profile_block("io.net.to_mpc"):
             net.to_mpc(temp_filename)
+
+        # Write scenario marker to solver log
+        _write_scenario_header("dcpf", scenario_index, pert_index, "DCPF")
 
         # Run DCPF (fast or standard)
         with solver_capture("dcpf"):
@@ -170,7 +198,7 @@ def run_dcpf(net: Network, jl: Any, fast: Union[bool, None] = None) -> Dict[str,
 
 
 @profile()
-def run_dcopf(net: Network, jl: Any) -> Dict[str, Any]:
+def run_dcopf(net: Network, jl: Any, scenario_index: Optional[int] = None, pert_index: Optional[int] = None) -> Dict[str, Any]:
     """Run DC Optimal Power Flow (DC OPF) calculation using Julia interface.
 
     This function runs the DC optimal power flow calculation using the Julia interface
@@ -179,6 +207,8 @@ def run_dcopf(net: Network, jl: Any) -> Dict[str, Any]:
     Args:
         net: A network object containing the power system model.
         jl: Julia interface object for running DC OPF.
+        scenario_index: Optional scenario index for log markers.
+        pert_index: Optional perturbation index for log markers.
 
     Returns:
         DC OPF result containing termination status and solution data.
@@ -194,6 +224,9 @@ def run_dcopf(net: Network, jl: Any) -> Dict[str, Any]:
         # Save network to temporary file
         with profile_block("io.net.to_mpc"):
             net.to_mpc(temp_filename)
+
+        # Write scenario marker to solver log
+        _write_scenario_header("dcopf", scenario_index, pert_index, "DCOPF")
 
         # Run DC OPF
         with solver_capture("dcopf"):
