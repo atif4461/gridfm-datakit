@@ -6,6 +6,7 @@ to parquet files with proper formatting and scenario indexing.
 """
 
 import os
+import tempfile
 import pandas as pd
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
@@ -186,7 +187,11 @@ def save_node_edge_data(
         for f in futures:
             f.result()  # wait for each task to finish
 
-    # Write n_scenarios metadata file
+    # Write n_scenarios metadata file (atomic)
     total_scenarios = last_scenario + 1 + len(processed_data)
-    with open(n_scenarios_file, "w") as f:
-        f.write(str(total_scenarios))
+    with tempfile.NamedTemporaryFile(
+        mode="w", dir=base_path, delete=False
+    ) as tmp:
+        tmp.write(str(total_scenarios))
+        tmp_path = tmp.name
+    os.rename(tmp_path, n_scenarios_file)  # Atomic on POSIX

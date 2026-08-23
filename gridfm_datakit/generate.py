@@ -5,6 +5,7 @@ import multiprocessing
 import os
 import shutil
 import sys
+import tempfile
 import time
 from datetime import datetime
 from multiprocessing import Manager
@@ -537,6 +538,16 @@ def generate_power_flow_data_distributed(
         np.ceil(n_scenarios_to_process / args.settings.large_chunk_size).astype(int),
     )
 
+    # Checkpoint file for resuming from last completed large chunk
+    checkpoint_file = os.path.join(base_path, "completed_chunk.txt")
+    start_chunk_index = 0
+    if os.path.exists(checkpoint_file):
+        with open(checkpoint_file, "r") as f:
+            content = f.read().strip()
+            if content:
+                start_chunk_index = int(content) + 1
+                print(f"Resuming from large chunk index {start_chunk_index}")
+
     with open(file_paths["tqdm_log"], "a") as f:
         with tqdm(
             total=n_scenarios_to_process,
@@ -545,6 +556,11 @@ def generate_power_flow_data_distributed(
             miniters=5,
         ) as pbar:
             for large_chunk_index, large_chunk in enumerate(large_chunks):
+                # Skip already-completed chunks (checkpoint resume)
+                if large_chunk_index < start_chunk_index:
+                    # Update progress bar for skipped scenarios
+                    pbar.update(len(large_chunk))
+                    continue
                 write_ram_usage_distributed(f)
                 chunk_size = len(large_chunk)
                 scenario_chunks = np.array_split(
@@ -638,6 +654,14 @@ def generate_power_flow_data_distributed(
                     base_path,
                     args,
                 )
+
+                # Write checkpoint (atomic)
+                with tempfile.NamedTemporaryFile(
+                    mode="w", dir=base_path, delete=False
+                ) as tmp:
+                    tmp.write(str(large_chunk_index))
+                    tmp_path = tmp.name
+                os.rename(tmp_path, checkpoint_file)
 
                 del processed_data
                 gc.collect()
