@@ -233,7 +233,7 @@ def _prepare_network_and_scenarios(
             f"network.source must be 'pglib' or 'file', got {args.network.source!r}",
         )
 
-    read_scenarios = False # connect to config
+    read_scenarios = True # connect to config
     if read_scenarios:
         # 1. Load the parquet
         #scenarios_df = pd.read_parquet("/home/atif/gridfm-datakit/scripts/large_grids/data_case118_baseline/pf/case118_ieee/raw/scenarios_agg_load_profile.parquet")

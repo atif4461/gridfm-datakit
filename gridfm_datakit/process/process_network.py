@@ -193,6 +193,17 @@ def init_julia(
         else:
             coinhsl_options = ""
 
+
+        # Later expand to diverging_iterates_tol, acceptable_tol, acceptable_iter, acceptable_dual_inf_tol, dual_inf_tol
+        robustness_options = '''
+                            "max_wall_time" => 600.0,
+                            "diverging_iterates_tol" => 10000.0,
+                            "acceptable_tol" => 1e-4,
+                            "acceptable_iter" => 15,
+                            "acceptable_dual_inf_tol" => 1e6,
+                            "dual_inf_tol" => 1e4,
+        '''
+
         # ----- AC-OPF core -----
         jl.seval(
             """
@@ -204,7 +215,9 @@ def init_julia(
                     Ipopt.Optimizer,
                     "tol" => 1e-6,
                     "print_level" => {},
+                    "print_user_options" => "yes",
                     "max_iter" => {},
+        {}
         {}
                 ),
             )
@@ -213,7 +226,7 @@ def init_julia(
             result["solution"]["pf"] = false
             return result
         end
-        """.format(print_level, max_iter, coinhsl_options),
+        """.format(print_level, max_iter, coinhsl_options, robustness_options),
         )
 
         # Output routing is handled in Python (fd-level capture around the call),

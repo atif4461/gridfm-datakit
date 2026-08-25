@@ -17,7 +17,7 @@ from gridfm_datakit.utils.profiler import profile, profile_block
 from typing import Union
 
 
-def _write_scenario_header(channel_name: str, scenario_index: Optional[int], pert_index: Optional[int], solver_name: str) -> None:
+def _write_scenario_header(channel_name: str, scenario_index: Optional[int], pert_index: Optional[int], solver_name: str, is_start: bool) -> None:
     """Write START/END markers to the solver log channel for a scenario/variant."""
     router = get_active_router()
     if router is None:
@@ -26,8 +26,10 @@ def _write_scenario_header(channel_name: str, scenario_index: Optional[int], per
         return
     channel = router.channel(channel_name)
     tag = f"scenario={scenario_index}" + (f", variant={pert_index}" if pert_index is not None else "")
-    channel.write_header(f"===== {solver_name} START [{tag}] =====")
-    channel.write_header(f"===== {solver_name} END   [{tag}] =====")
+    if is_start:
+        channel.write_header(f"===== {solver_name} START [{tag}] =====")
+    else:
+        channel.write_header(f"===== {solver_name} END   [{tag}] =====")
 
 
 @profile()
@@ -56,7 +58,7 @@ def run_opf(net: Network, jl: Any, scenario_index: Optional[int] = None, pert_in
             net.to_mpc(temp_filename)
 
         # Write scenario marker to solver log
-        _write_scenario_header("opf", scenario_index, pert_index, "OPF")
+        _write_scenario_header("opf", scenario_index, pert_index, "OPF", True)
 
         with solver_capture("opf"):
             with profile_block("julia.run_opf"):
@@ -65,6 +67,7 @@ def run_opf(net: Network, jl: Any, scenario_index: Optional[int] = None, pert_in
         if str(result["termination_status"]) != "LOCALLY_SOLVED":
             raise RuntimeError(f"OPF did not converge: {result['termination_status']}")
 
+        _write_scenario_header("opf", scenario_index, pert_index, "OPF", False)
         return result
 
     except Exception as e:
@@ -107,7 +110,7 @@ def run_pf(net: Network, jl: Any, fast: Union[bool, None] = None, scenario_index
             net.to_mpc(temp_filename)
 
         # Write scenario marker to solver log
-        _write_scenario_header("pf", scenario_index, pert_index, "PF")
+        _write_scenario_header("pf", scenario_index, pert_index, "PF", True)
 
         # Run PF
         with solver_capture("pf"):
@@ -126,6 +129,7 @@ def run_pf(net: Network, jl: Any, fast: Union[bool, None] = None, scenario_index
                 f"PF did not converge: {result['termination_status']}, fast={fast}",
             )
 
+        _write_scenario_header("pf", scenario_index, pert_index, "PF", False)
         return result
 
     except Exception as e:
@@ -167,7 +171,7 @@ def run_dcpf(net: Network, jl: Any, fast: Union[bool, None] = None, scenario_ind
             net.to_mpc(temp_filename)
 
         # Write scenario marker to solver log
-        _write_scenario_header("dcpf", scenario_index, pert_index, "DCPF")
+        _write_scenario_header("dcpf", scenario_index, pert_index, "DCPF", True)
 
         # Run DCPF (fast or standard)
         with solver_capture("dcpf"):
@@ -187,6 +191,7 @@ def run_dcpf(net: Network, jl: Any, fast: Union[bool, None] = None, scenario_ind
                 f"DC PF did not converge: {result['termination_status']}, fast={fast}",
             )
 
+        _write_scenario_header("dcpf", scenario_index, pert_index, "DCPF", False)
         return result
 
     except Exception as e:
@@ -226,7 +231,7 @@ def run_dcopf(net: Network, jl: Any, scenario_index: Optional[int] = None, pert_
             net.to_mpc(temp_filename)
 
         # Write scenario marker to solver log
-        _write_scenario_header("dcopf", scenario_index, pert_index, "DCOPF")
+        _write_scenario_header("dcopf", scenario_index, pert_index, "DCOPF", True)
 
         # Run DC OPF
         with solver_capture("dcopf"):
@@ -238,6 +243,7 @@ def run_dcopf(net: Network, jl: Any, scenario_index: Optional[int] = None, pert_
                 f"DC OPF did not converge: {result['termination_status']}",
             )
 
+        _write_scenario_header("dcopf", scenario_index, pert_index, "DCOPF", False)
         return result
 
     except Exception as e:
