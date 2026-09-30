@@ -7,9 +7,12 @@ import shutil
 import sys
 import tempfile
 import time
+import queue 
+import signal
 from datetime import datetime
 from multiprocessing import Manager
 from typing import Any, Dict, List, Tuple, Union
+from concurrent.futures import ProcessPoolExecutor
 
 import pandas as pd
 import numpy as np
@@ -47,7 +50,6 @@ from gridfm_datakit.utils.param_handler import (
 from gridfm_datakit.utils.random_seed import custom_seed
 from gridfm_datakit.utils import profiler
 from gridfm_datakit.utils.utils import Tee, write_ram_usage_distributed
-
 
 @profiler.profile()
 def _setup_environment(
@@ -237,7 +239,7 @@ def _prepare_network_and_scenarios(
     if read_scenarios:
         # 1. Load the parquet
         #scenarios_df = pd.read_parquet("/home/atif/gridfm-datakit/scripts/large_grids/data_case118_baseline/pf/case118_ieee/raw/scenarios_agg_load_profile.parquet")
-        scenarios_df = pd.read_parquet("/home/atif/gridfm-datakit/scripts/large_grids/scenarios_df/case19402/scenarios_agg_load_profile.parquet")
+        scenarios_df = pd.read_parquet("/home/atif/gridfm-datakit/scripts/large_grids/scenarios_df/opf/case19402/scenarios_agg_load_profile.parquet")
         
         # 2. Infer dimensions
         # Total rows = n_loads * n_scenarios
@@ -455,11 +457,17 @@ def generate_power_flow_data(
 
     return file_paths
 
-
+@profiler.profile()
 def generate_power_flow_data_distributed(
     config: Union[str, Dict[str, Any], NestedNamespace],
 ) -> Dict[str, str]:
-    """Generate power flow data based on the provided configuration using distributed processing.
+    """Generate power-flow data based on the provided configuration using distributed processing.
+    Each worker processes a contiguous sub-chunk of scenarios.
+    If settings.scenario_timeout_sec is set, each individual scenario
+    receives that many seconds of wall-clock time. If a scenario exceeds
+    the timeout, its worker is killed and the whole pool is recreated.
+
+    Ordinary worker exceptions are reported immediately through the progress queue.
 
     Args:
         config: Configuration can be provided in three ways:
@@ -496,6 +504,18 @@ def generate_power_flow_data_distributed(
     if args.settings.mode not in ["opf", "pf"]:
         raise ValueError("Invalid mode!")
 
+    # read scenario timeout from configuration
+    scenario_timeout = getattr(args.settings,"scenario_timeout_sec",None)
+
+    if scenario_timeout is not None:
+        scenario_timeout = float(scenario_timeout)
+
+        if scenario_timeout <= 0:
+            raise ValueError(
+                "settings.scenario_timeout_sec must be "
+                "greater than zero or None"
+            )
+
     # Prepare network and scenarios
     net, scenarios, meta = _prepare_network_and_scenarios(args, file_paths, seed)
 
@@ -527,7 +547,8 @@ def generate_power_flow_data_distributed(
     t0 = time.time()
 
     # Setup multiprocessing
-    manager = Manager()
+    mp_ctx = multiprocessing.get_context("spawn")
+    manager = mp_ctx.Manager()
     progress_queue = manager.Queue()
 
     # Process scenarios in chunks - limit to first 64 scenarios for actual processing
@@ -548,130 +569,509 @@ def generate_power_flow_data_distributed(
                 start_chunk_index = int(content) + 1
                 print(f"Resuming from large chunk index {start_chunk_index}")
 
-    with open(file_paths["tqdm_log"], "a") as f:
-        with tqdm(
-            total=n_scenarios_to_process,
-            desc="Processing scenarios",
-            file=Tee(sys.stdout, f),
-            miniters=5,
-        ) as pbar:
-            for large_chunk_index, large_chunk in enumerate(large_chunks):
-                # Skip already-completed chunks (checkpoint resume)
-                if large_chunk_index < start_chunk_index:
-                    # Update progress bar for skipped scenarios
-                    pbar.update(len(large_chunk))
-                    continue
-                write_ram_usage_distributed(f)
-                chunk_size = len(large_chunk)
-                scenario_chunks = np.array_split(
-                    large_chunk,
-                    min(args.settings.num_processes, chunk_size),
-                )
 
-                # pp_net wraps JVM state and cannot cross process boundaries;
-                # workers reload it themselves from network_path.
-                worker_meta = {k: v for k, v in meta.items() if k != "pp_net"}
+    try:
+        with (
+            open(file_paths["tqdm_log"], "a") as f,
+            open(file_paths["error_log"], "a") as err_f,
+        ):
+            with tqdm(
+                total=n_scenarios_to_process,
+                desc="Processing scenarios",
+                file=Tee(sys.stdout, f),
+                miniters=5,
+            ) as pbar:
 
-                # Extract coinhsl settings from config
-                coinhsl_config = getattr(args.settings, "coinhsl", None)
-                coinhsl_enabled = False
-                coinhsl_linear_solver = ""
-                coinhsl_hsllib = ""
-                
-                if coinhsl_config is not None:
-                    coinhsl_enabled = getattr(coinhsl_config, "enabled", False)
-                    if coinhsl_enabled:
-                        coinhsl_linear_solver = getattr(coinhsl_config, "linear_solver", "ma57")
-                        coinhsl_hsllib = getattr(coinhsl_config, "hsllib", "/home/atif/packages/coinhsl-2023.11.17/install/lib/x86_64-linux-gnu/libcoinhsl.so")
-                        if not os.path.exists(coinhsl_hsllib):
-                            raise FileNotFoundError(f"CoinHSL library not found at: {coinhsl_hsllib}")
-                # If coinhsl_config is None or coinhsl.enabled is False, coinhsl_enabled remains False
+                for large_chunk_index, large_chunk in enumerate(
+                    large_chunks
+                ):
+                    # --------------------------------------------------
+                    # Already checkpointed.
+                    # --------------------------------------------------
+                    if large_chunk_index < start_chunk_index:
+                        pbar.update(len(large_chunk))
+                        continue
 
-                tasks = [
-                    (
-                        args.settings.mode,
-                        chunk[0],
-                        chunk[-1] + 1,
-                        scenarios,
-                        net,
-                        progress_queue,
-                        topology_generator,
-                        generation_generator,
-                        admittance_generator,
-                        file_paths["error_log"],
-                        args.settings.include_dc_res,
-                        args.settings.pf_fast,
-                        args.settings.dcpf_fast,
-                        file_paths["solver_log_dir"],
-                        args.settings.max_iter,
-                        seed,
-                        args.settings.pf_solver,
-                        worker_meta,
-                        coinhsl_enabled,
-                        coinhsl_linear_solver,
-                        coinhsl_hsllib,
+                    write_ram_usage_distributed(f)
+
+                    chunk_size = len(large_chunk)
+
+                    scenario_chunks = np.array_split(
+                        large_chunk,
+                        min(
+                            args.settings.num_processes,
+                            chunk_size,
+                        ),
                     )
-                    for chunk in scenario_chunks
-                ]
 
-                # Run parallel processing
-                _mp_ctx = multiprocessing.get_context("spawn")
-                with _mp_ctx.Pool(processes=args.settings.num_processes) as pool:
-                    results = [
-                        pool.apply_async(process_scenario_chunk, task) for task in tasks
-                    ]
+                    worker_meta = {
+                        k: v
+                        for k, v in meta.items()
+                        if k != "pp_net"
+                    }
 
-                    # Update progress
-                    completed = 0
-                    while completed < chunk_size:
-                        progress_queue.get()
-                        pbar.update(1)
-                        completed += 1
+                    # --------------------------------------------------
+                    # CoinHSL settings
+                    # --------------------------------------------------
+                    coinhsl_config = getattr(
+                        args.settings,
+                        "coinhsl",
+                        None,
+                    )
 
-                    # Gather results
-                    processed_data = []
+                    coinhsl_enabled = False
+                    coinhsl_linear_solver = ""
+                    coinhsl_hsllib = ""
 
-                    for result in results:
-                        (
-                            e,
-                            traceback,
-                            local_processed_data,
-                        ) = result.get()
-                        if isinstance(e, Exception):
-                            print(f"Error in process_scenario_chunk: {e}")
-                            print(traceback)
-                            sys.exit(e)
-                        processed_data.extend(local_processed_data)
+                    if coinhsl_config is not None:
+                        coinhsl_enabled = getattr(
+                            coinhsl_config,
+                            "enabled",
+                            False,
+                        )
 
-                    pool.close()
-                    pool.join()
+                        if coinhsl_enabled:
+                            coinhsl_linear_solver = getattr(
+                                coinhsl_config,
+                                "linear_solver",
+                                "ma57",
+                            )
 
-                # Save processed data
-                _save_generated_data(
-                    net,
-                    processed_data,
-                    file_paths,
-                    base_path,
-                    args,
-                )
+                            coinhsl_hsllib = getattr(
+                                coinhsl_config,
+                                "hsllib",
+                                (
+                                    "/home/atif/packages/"
+                                    "coinhsl-2023.11.17/install/lib/"
+                                    "x86_64-linux-gnu/libcoinhsl.so"
+                                ),
+                            )
 
-                # Write checkpoint (atomic)
-                with tempfile.NamedTemporaryFile(
-                    mode="w", dir=base_path, delete=False
-                ) as tmp:
-                    tmp.write(str(large_chunk_index))
-                    tmp_path = tmp.name
-                os.rename(tmp_path, checkpoint_file)
+                            if not os.path.exists(
+                                coinhsl_hsllib
+                            ):
+                                raise FileNotFoundError(
+                                    "CoinHSL library not found at: "
+                                    f"{coinhsl_hsllib}"
+                                )
 
-                del processed_data
-                gc.collect()
+                    # --------------------------------------------------
+                    # IMPORTANT:
+                    #
+                    # This survives retries of THIS large chunk.
+                    #
+                    # Any scenario added here will be skipped by
+                    # process_scenario_chunk on all subsequent attempts.
+                    # --------------------------------------------------
+                    skipped_scenarios = set()
 
-    print('\n Time for data generation',time.time()-t0,flush=True)
-    
-    # Merge per-process profiling stats (main + all workers) and write report.
+                    processed_data = None
+
+                    # ==================================================
+                    # Retry current large chunk until all non-skipped
+                    # scenarios complete successfully.
+                    # ==================================================
+                    while processed_data is None:
+
+                        # ----------------------------------------------
+                        # Rebuild tasks every retry because
+                        # skipped_scenarios may have changed.
+                        #
+                        # Use a regular set copy. It gets pickled when
+                        # sent to spawned workers.
+                        # ----------------------------------------------
+                        skip_snapshot = set(skipped_scenarios)
+
+                        tasks = [
+                            (
+                                args.settings.mode,
+                                int(chunk[0]),
+                                int(chunk[-1]) + 1,
+                                scenarios,
+                                net,
+                                progress_queue,
+                                topology_generator,
+                                generation_generator,
+                                admittance_generator,
+                                file_paths["error_log"],
+                                args.settings.include_dc_res,
+                                args.settings.pf_fast,
+                                args.settings.dcpf_fast,
+                                file_paths["solver_log_dir"],
+                                args.settings.max_iter,
+                                seed,
+                                args.settings.pf_solver,
+                                worker_meta,
+                                coinhsl_enabled,
+                                coinhsl_linear_solver,
+                                coinhsl_hsllib,
+                                skip_snapshot,
+                            )
+                            for chunk in scenario_chunks
+                        ]
+
+                        pool = mp_ctx.Pool(
+                            processes=args.settings.num_processes
+                        )
+
+                        pool_closed = False
+                        pool_terminated = False
+
+                        # Number of successful scenario completions
+                        # reported during THIS attempt.
+                        completed_this_attempt = 0
+
+                        try:
+                            results = [
+                                pool.apply_async(
+                                    process_scenario_chunk,
+                                    task,
+                                )
+                                for task in tasks
+                            ]
+
+                            timed_out = False
+                            timed_out_pid = None
+                            timed_out_scenario = None
+
+                            worker_failed = False
+                            failed_pid = None
+                            failed_scenario = None
+
+                            # pid -> (scenario_index, start_time)
+                            active_scenarios = {}
+
+                            # Timed-out scenarios are not expected to emit
+                            # "done" during this or future attempts.
+                            expected_completions = (
+                                chunk_size
+                                - len(skipped_scenarios)
+                            )
+
+                            # ==========================================
+                            # Watch workers/scenarios
+                            # ==========================================
+                            while (
+                                completed_this_attempt
+                                < expected_completions
+                            ):
+                                try:
+                                    (
+                                        event,
+                                        worker_pid,
+                                        scenario_index,
+                                    ) = progress_queue.get(
+                                        timeout=0.5
+                                    )
+
+                                    if event == "start":
+                                        active_scenarios[
+                                            worker_pid
+                                        ] = (
+                                            scenario_index,
+                                            time.monotonic(),
+                                        )
+
+                                    elif event == "done":
+                                        active_scenarios.pop(
+                                            worker_pid,
+                                            None,
+                                        )
+
+                                        completed_this_attempt += 1
+                                        pbar.update(1)
+
+                                    elif event == "error":
+                                        active_scenarios.pop(
+                                            worker_pid,
+                                            None,
+                                        )
+
+                                        failed_pid = worker_pid
+                                        failed_scenario = (
+                                            scenario_index
+                                        )
+                                        worker_failed = True
+                                        break
+
+                                    else:
+                                        raise RuntimeError(
+                                            "Unknown worker progress "
+                                            f"event: {event!r}"
+                                        )
+
+                                except queue.Empty:
+                                    pass
+
+                                # --------------------------------------
+                                # Check every running scenario
+                                # independently.
+                                # --------------------------------------
+                                if scenario_timeout is not None:
+                                    now = time.monotonic()
+
+                                    for (
+                                        worker_pid,
+                                        (
+                                            scenario_index,
+                                            start_time,
+                                        ),
+                                    ) in list(
+                                        active_scenarios.items()
+                                    ):
+                                        elapsed = (
+                                            now - start_time
+                                        )
+
+                                        if (
+                                            elapsed
+                                            > scenario_timeout
+                                        ):
+                                            timed_out = True
+                                            timed_out_pid = (
+                                                worker_pid
+                                            )
+                                            timed_out_scenario = (
+                                                scenario_index
+                                            )
+
+                                            message = (
+                                                f"Large chunk "
+                                                f"{large_chunk_index}: "
+                                                f"scenario "
+                                                f"{scenario_index} "
+                                                f"timed out after "
+                                                f"{elapsed:.1f}s "
+                                                f"(limit="
+                                                f"{scenario_timeout}s, "
+                                                f"pid={worker_pid}). "
+                                                f"The scenario will be "
+                                                f"skipped permanently "
+                                                f"for this chunk.\n"
+                                            )
+
+                                            print(
+                                                message.rstrip(),
+                                                flush=True,
+                                            )
+
+                                            err_f.write(message)
+                                            err_f.flush()
+
+                                            # Kill the worker actually
+                                            # running the hung scenario.
+                                            try:
+                                                os.kill(
+                                                    worker_pid,
+                                                    signal.SIGKILL,
+                                                )
+                                            except ProcessLookupError:
+                                                pass
+
+                                            break
+
+                                if timed_out or worker_failed:
+                                    break
+
+                            # ==========================================
+                            # Normal worker exception
+                            # ==========================================
+                            if worker_failed:
+                                message = (
+                                    f"Worker pid={failed_pid} "
+                                    f"failed"
+                                )
+
+                                if failed_scenario is not None:
+                                    message += (
+                                        " while processing scenario "
+                                        f"{failed_scenario}"
+                                    )
+
+                                message += ". See error log.\n"
+
+                                err_f.write(message)
+                                err_f.flush()
+
+                                pool.terminate()
+                                pool.join()
+
+                                pool_terminated = True
+
+                                # This is a real exception, not a
+                                # timeout. Do not retry.
+                                raise RuntimeError(
+                                    message.rstrip()
+                                )
+
+                            # ==========================================
+                            # Individual scenario timed out
+                            # ==========================================
+                            if timed_out:
+                                # --------------------------------------
+                                # THIS is the key behavior:
+                                # remember this scenario before retrying.
+                                # --------------------------------------
+                                skipped_scenarios.add(
+                                    timed_out_scenario
+                                )
+
+                                pool.terminate()
+                                pool.join()
+
+                                pool_terminated = True
+
+                                # --------------------------------------
+                                # Drain messages from the aborted pool.
+                                # No workers remain after join(), so no
+                                # additional old events should arrive.
+                                # --------------------------------------
+                                while True:
+                                    try:
+                                        progress_queue.get_nowait()
+                                    except queue.Empty:
+                                        break
+
+                                # --------------------------------------
+                                # All completed work from this aborted
+                                # attempt will be recomputed, so remove
+                                # it from tqdm.
+                                # --------------------------------------
+                                if completed_this_attempt:
+                                    pbar.n -= (
+                                        completed_this_attempt
+                                    )
+                                    pbar.refresh()
+
+                                # --------------------------------------
+                                # The timed-out scenario itself is now
+                                # permanently considered handled/skipped.
+                                #
+                                # It won't be executed again, so count
+                                # it once toward overall progress.
+                                # --------------------------------------
+                                pbar.update(1)
+
+                                continue
+
+                            # ==========================================
+                            # All expected non-skipped scenarios emitted
+                            # "done". Gather their actual return values.
+                            # ==========================================
+                            local_results = []
+
+                            for result in results:
+                                (
+                                    error,
+                                    tb,
+                                    local_processed_data,
+                                ) = result.get()
+
+                                if isinstance(
+                                    error,
+                                    Exception,
+                                ):
+                                    print(
+                                        "Error in "
+                                        "process_scenario_chunk: "
+                                        f"{error}"
+                                    )
+
+                                    if tb:
+                                        print(tb)
+
+                                    raise RuntimeError(
+                                        "process_scenario_chunk "
+                                        f"failed: {error}"
+                                    ) from error
+
+                                if local_processed_data:
+                                    local_results.extend(
+                                        local_processed_data
+                                    )
+
+                            pool.close()
+                            pool.join()
+
+                            pool_closed = True
+
+                            processed_data = local_results
+
+                        finally:
+                            # ------------------------------------------
+                            # Ensure no worker survives an unexpected
+                            # exception in the parent.
+                            # ------------------------------------------
+                            if (
+                                not pool_closed
+                                and not pool_terminated
+                            ):
+                                pool.terminate()
+                                pool.join()
+
+                    # ==================================================
+                    # Large chunk completed.
+                    # ==================================================
+                    _save_generated_data(
+                        net,
+                        processed_data,
+                        file_paths,
+                        base_path,
+                        args,
+                    )
+
+                    # Log skipped scenarios for visibility.
+                    if skipped_scenarios:
+                        skipped_sorted = sorted(
+                            skipped_scenarios
+                        )
+
+                        message = (
+                            f"Large chunk {large_chunk_index} "
+                            f"completed with timed-out scenarios "
+                            f"skipped: {skipped_sorted}\n"
+                        )
+
+                        err_f.write(message)
+                        err_f.flush()
+
+                    # --------------------------------------------------
+                    # Only checkpoint after successfully saving the
+                    # completed/non-timed-out data.
+                    # --------------------------------------------------
+                    with tempfile.NamedTemporaryFile(
+                        mode="w",
+                        dir=base_path,
+                        delete=False,
+                    ) as tmp:
+                        tmp.write(
+                            str(large_chunk_index)
+                        )
+                        tmp_path = tmp.name
+
+                    os.replace(
+                        tmp_path,
+                        checkpoint_file,
+                    )
+
+                    del processed_data
+                    gc.collect()
+
+    finally:
+        manager.shutdown()
+
+    print(
+        "\n Time for data generation",
+        time.time() - t0,
+        flush=True,
+    )
+
     if profiler.is_enabled():
         report_path = profiler.write_report()
+
         if report_path is not None:
-            print(f"Profiling report written to {report_path}")
+            print(
+                f"Profiling report written to {report_path}"
+            )
 
     return file_paths

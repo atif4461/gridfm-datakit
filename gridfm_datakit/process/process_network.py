@@ -1045,47 +1045,19 @@ def process_scenario_chunk(
     coinhsl_enabled: bool = True,
     coinhsl_linear_solver: str = "",
     coinhsl_hsllib: str = "",
+    skip_scenarios: Optional[set] = None,
 ) -> Tuple[
     Union[None, Exception],
     Union[None, str],
     Optional[List[np.ndarray]],
 ]:
-    """Process a chunk of scenarios for distributed processing.
+    """Process a chunk of scenarios for distributed processing."""
 
-    This function processes multiple scenarios in a single worker process,
-    accumulating results before returning them to the main process.
+    worker_pid = os.getpid()
+    current_scenario_index = None
 
-    Args:
-        mode: Processing mode ("opf" or "pf").
-        start_idx: Starting scenario index (inclusive).
-        end_idx: Ending scenario index (exclusive).
-        scenarios: Array of load scenarios with shape (n_loads, n_scenarios, 2).
-        net: The power network.
-        progress_queue: Queue for reporting progress to main process.
-        topology_generator: Generator for topology perturbations.
-        generation_generator: Generator for generation cost perturbations.
-        admittance_generator: Generator for line admittance perturbations.
-        error_log_path: Path to error log file for recording failures.
-        include_dc_res: Whether to include DC power flow results in output.
-        pf_fast: Whether to use fast AC PF solver.
-        dcpf_fast: Whether to use fast DC PF solver.
-        solver_log_dir: Directory for solver logs.
-        max_iter: Maximum iterations for the solver.
-        seed: Global random seed for reproducibility.
-        pf_solver: PF solver to use in pf mode; either 'powermodel' or 'powsybl'.
-            OPF is always solved by PowerModels regardless of this value.
-        meta: metadata dict; when pf_solver='powsybl', must contain 'network_path'
-            and 'mapping_p2g'. 'pp_net' is loaded fresh per worker from 'network_path'.
-        coinhsl_enabled: Whether to use CoinHSL linear solvers.
-        coinhsl_linear_solver: CoinHSL linear solver to use (e.g., "ma27", "ma57", "ma77", "ma86", "ma97").
-        coinhsl_hsllib: Path to CoinHSL shared library.
-
-    Returns:
-        Tuple containing:
-            - Exception object (None if successful)
-            - Traceback string (None if successful)
-            - List of processed data tuples (bus, gen, branch, Y_bus arrays)
-    """
+    if skip_scenarios is None:
+        skip_scenarios = set()
 
     try:
         jl = init_julia(
@@ -1096,7 +1068,6 @@ def process_scenario_chunk(
             coinhsl_hsllib=coinhsl_hsllib,
         )
 
-        # In distributed (spawn) workers pp_net is not passed; reload it here.
         if (
             pf_solver == "powsybl"
             and meta
@@ -1106,67 +1077,115 @@ def process_scenario_chunk(
             import gridfm_datakit.powsybl as _powsybl
 
             loaded_net = _powsybl.load_net(meta["network_path"])
+
             meta = dict(meta)
             meta["pp_net"] = loaded_net.pp_net
 
         local_processed_data = []
 
-        # Use custom_seed to set seed based on start_idx for this chunk
-        # This ensures each chunk gets a unique but deterministic seed
-        # we multiply by 20_000 to ensure there is no collision with other runs where the seed would be close to each other
-        # example (assuming we have chunks of length 1, hence an increment of 1 between start indices)
-        # Run A: base seed = 42 → scenario seeds = 42, 43, 44, …, 10041 (for 10,000 scenarios)
-        # Run B: base seed = 120 → scenario seeds = 120, 121, 122, …, 10119
-        # These sets overlap on seeds 120..10041 (so 9,922 overlapping seeds).
-        # we also add 1 in case the seed is 0, to not have collision witht he seed used for the load perturbations
-        with custom_seed(seed * 20_000 + start_idx + 1):
-            for scenario_index in range(start_idx, end_idx):
-                if mode == "opf":
-                    local_processed_data = process_scenario_opf_mode(
-                        net,
-                        scenarios,
+        with custom_seed(
+            seed * 20_000 + start_idx + 1
+        ):
+            for scenario_index in range(
+                start_idx,
+                end_idx,
+            ):
+                # Do not retry scenarios that previously timed out.
+                if scenario_index in skip_scenarios:
+                    continue
+
+                current_scenario_index = scenario_index
+
+                progress_queue.put(
+                    (
+                        "start",
+                        worker_pid,
                         scenario_index,
-                        topology_generator,
-                        generation_generator,
-                        admittance_generator,
-                        local_processed_data,
-                        error_log_path,
-                        include_dc_res,
-                        jl,
                     )
-                elif mode == "pf":
-                    local_processed_data = process_scenario_pf_mode(
-                        net,
-                        scenarios,
-                        scenario_index,
-                        topology_generator,
-                        generation_generator,
-                        admittance_generator,
-                        local_processed_data,
-                        error_log_path,
-                        include_dc_res,
-                        pf_fast,
-                        dcpf_fast,
-                        jl,
-                        pf_solver,
-                        meta=meta,
+                )
+
+                if mode == "opf":
+                    local_processed_data = (
+                        process_scenario_opf_mode(
+                            net,
+                            scenarios,
+                            scenario_index,
+                            topology_generator,
+                            generation_generator,
+                            admittance_generator,
+                            local_processed_data,
+                            error_log_path,
+                            include_dc_res,
+                            jl,
+                        )
                     )
 
-                progress_queue.put(1)  # update queue
+                elif mode == "pf":
+                    local_processed_data = (
+                        process_scenario_pf_mode(
+                            net,
+                            scenarios,
+                            scenario_index,
+                            topology_generator,
+                            generation_generator,
+                            admittance_generator,
+                            local_processed_data,
+                            error_log_path,
+                            include_dc_res,
+                            pf_fast,
+                            dcpf_fast,
+                            jl,
+                            pf_solver,
+                            meta=meta,
+                        )
+                    )
+
+                else:
+                    raise ValueError(
+                        f"Invalid mode: {mode}"
+                    )
+
+                progress_queue.put(
+                    (
+                        "done",
+                        worker_pid,
+                        scenario_index,
+                    )
+                )
+
+                current_scenario_index = None
 
         return (
             None,
             None,
             local_processed_data,
         )
+
     except Exception as e:
+        tb = traceback.format_exc()
+
         with open(error_log_path, "a") as f:
-            f.write(f"Caught an exception in process_scenario_chunk function: {e}\n")
-            f.write(traceback.format_exc())
+            f.write(
+                "Caught an exception in "
+                "process_scenario_chunk function: "
+                f"{e}\n"
+            )
+            f.write(tb)
             f.write("\n")
-        for _ in range(end_idx - start_idx):
-            progress_queue.put(1)
-        return e, traceback.format_exc(), None
+
+        progress_queue.put(
+            (
+                "error",
+                worker_pid,
+                current_scenario_index,
+            )
+        )
+
+        return (
+            e,
+            tb,
+            None,
+        )
 
 
 @profile()
@@ -1220,9 +1239,10 @@ def process_scenario_opf_mode(
     # Apply admittance perturbations
     perturbations = admittance_generator.generate(perturbations)
 
-    for perturbation in (
-        perturbations
-    ):  # (that returns copies of the network with the topology perturbation applied)
+    #for perturbation in (
+    #    perturbations
+    #):  # (that returns copies of the network with the topology perturbation applied)
+    for pert_index, perturbation in enumerate(perturbations):
         res_dcopf = None
         if include_dc_res:
             try:
